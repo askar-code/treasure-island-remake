@@ -1,0 +1,12 @@
+.DS_Store
+claude/
+.claude/
+
+# Временные редакторские материалы
+*.html
+batch*-decisions.md
+
+# Временные файлы издательской сборки
+tmp/
+__pycache__/
+*.py[cod]
