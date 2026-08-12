@@ -20,6 +20,12 @@ from xml.etree import ElementTree
 
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
+from reportlab import rl_config
+
+# PDF files are binary artifacts already. Keeping JPEG streams binary avoids
+# roughly 25% ASCII85 overhead without recompressing or changing the images.
+rl_config.useA85 = 0
+
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_LEFT
 from reportlab.lib.pagesizes import A5
@@ -49,6 +55,17 @@ TMP_PDF = ROOT / "tmp" / "pdfs"
 PDF_IMAGE_CACHE = TMP_PDF / "images"
 PDF_OUTPUT = ROOT / "output" / "pdf"
 EPUB_OUTPUT = ROOT / "output" / "epub"
+
+EPUB_IMAGE_MAX_EDGE = 1600
+EPUB_IMAGE_QUALITY = 86
+EPUB_COVER_QUALITY = 90
+EPUB_MAX_FILE_SIZE = 20 * 1024 * 1024
+
+PDF_PLATE_DPI = 300
+PDF_IMAGE_QUALITY = 86
+PDF_IMAGE_SUBSAMPLING = 1
+PDF_COVER_QUALITY = 94
+PDF_MAX_FILE_SIZE = 12 * 1024 * 1024
 
 TITLE = "Если бы я вам рассказал про Сильвера"
 SHORT_TITLE = "Если бы я вам рассказал про Сильвера"
@@ -382,22 +399,66 @@ def build_cover() -> Path:
     return COVER
 
 
-def pdf_ready_image(source_path: Path, *, quality: int = 91) -> Path:
-    """Create a print-sharp JPEG copy so plates are not embedded as huge PNGs."""
+def pdf_ready_image(
+    source_path: Path,
+    *,
+    quality: int = PDF_IMAGE_QUALITY,
+    subsampling: int = PDF_IMAGE_SUBSAMPLING,
+    max_width: int | None = None,
+) -> Path:
+    """Create a print-sharp JPEG without embedding more pixels than the page uses."""
 
     PDF_IMAGE_CACHE.mkdir(parents=True, exist_ok=True)
     output_path = PDF_IMAGE_CACHE / f"{source_path.stem}.jpg"
     with PILImage.open(source_path) as source:
-        source.convert("RGB").save(
+        image = source.convert("RGB")
+        if max_width and image.width > max_width:
+            target_height = round(image.height * max_width / image.width)
+            image = image.resize(
+                (max_width, target_height),
+                PILImage.Resampling.LANCZOS,
+            )
+        image.save(
             output_path,
             format="JPEG",
             quality=quality,
-            subsampling=0,
+            subsampling=subsampling,
             optimize=True,
             progressive=True,
-            dpi=(300, 300),
+            dpi=(PDF_PLATE_DPI, PDF_PLATE_DPI),
         )
     return output_path
+
+
+def epub_image_name(source_name: str) -> str:
+    """Return the JPEG filename used for a master image inside the EPUB."""
+
+    return f"{Path(source_name).stem}.jpg"
+
+
+def write_epub_image(
+    source_path: Path,
+    output_path: Path,
+    *,
+    quality: int,
+    subsampling: int = 1,
+) -> None:
+    """Write a screen-sized JPEG while preserving the master PNG in the repo."""
+
+    with PILImage.open(source_path) as source:
+        image = source.convert("RGB")
+        image.thumbnail(
+            (EPUB_IMAGE_MAX_EDGE, EPUB_IMAGE_MAX_EDGE),
+            PILImage.Resampling.LANCZOS,
+        )
+        image.save(
+            output_path,
+            format="JPEG",
+            quality=quality,
+            subsampling=subsampling,
+            optimize=True,
+            progressive=True,
+        )
 
 
 def read_chapter(path: Path) -> tuple[str, list[str]]:
@@ -449,7 +510,8 @@ class ChapterHeading(Paragraph):
 def inline_illustration(image_path: Path) -> KeepTogether:
     """Fit a landscape plate into the text measure without breaking the scene."""
 
-    ready_path = pdf_ready_image(image_path)
+    target_width = round(TEXT_WIDTH / 72 * PDF_PLATE_DPI)
+    ready_path = pdf_ready_image(image_path, max_width=target_width)
     with PILImage.open(ready_path) as source:
         source_width, source_height = source.size
     width = TEXT_WIDTH
@@ -664,7 +726,12 @@ def pdf_styles() -> dict[str, ParagraphStyle]:
 
 
 def cover_flowable() -> Image:
-    return Image(str(pdf_ready_image(COVER, quality=94)), width=PAGE_WIDTH, height=PAGE_HEIGHT)
+    ready_cover = pdf_ready_image(
+        COVER,
+        quality=PDF_COVER_QUALITY,
+        subsampling=0,
+    )
+    return Image(str(ready_cover), width=PAGE_WIDTH, height=PAGE_HEIGHT)
 
 
 def front_matter_story(styles: dict[str, ParagraphStyle], include_contents: bool) -> list[Flowable]:
@@ -802,6 +869,11 @@ def build_pdf(output: Path, *, front_only: bool = False) -> Path:
     finally:
         if PDF_IMAGE_CACHE.exists():
             shutil.rmtree(PDF_IMAGE_CACHE)
+    if not front_only and output.stat().st_size > PDF_MAX_FILE_SIZE:
+        raise ValueError(
+            f"PDF is unexpectedly large: {output.stat().st_size / 1024 / 1024:.1f} MiB "
+            f"(limit: {PDF_MAX_FILE_SIZE / 1024 / 1024:.0f} MiB)"
+        )
     return output
 
 
@@ -843,8 +915,9 @@ def chapter_xhtml(filename: str, title: str, blocks: list[str]) -> str:
             if illustration_inserted:
                 raise ValueError(f"Illustration anchor occurs more than once in {filename}")
             image_name, alt = illustration
+            epub_name = epub_image_name(image_name)
             body.append(
-                f'<figure class="plate"><img src="../images/{html.escape(image_name)}" alt="{html.escape(alt)}"/></figure>'
+                f'<figure class="plate"><img src="../images/{html.escape(epub_name)}" alt="{html.escape(alt)}"/></figure>'
             )
             illustration_inserted = True
 
@@ -945,15 +1018,26 @@ def build_epub(output: Path) -> Path:
     )
     (staging / "OEBPS" / "styles" / "book.css").write_text(EPUB_CSS, encoding="utf-8")
 
-    shutil.copy2(COVER, staging / "OEBPS" / "images" / "cover.png")
+    cover_name = epub_image_name(COVER.name)
+    write_epub_image(
+        COVER,
+        staging / "OEBPS" / "images" / cover_name,
+        quality=EPUB_COVER_QUALITY,
+        subsampling=0,
+    )
     for image_name, _alt in ILLUSTRATIONS.values():
-        shutil.copy2(IMAGES / image_name, staging / "OEBPS" / "images" / image_name)
+        epub_name = epub_image_name(image_name)
+        write_epub_image(
+            IMAGES / image_name,
+            staging / "OEBPS" / "images" / epub_name,
+            quality=EPUB_IMAGE_QUALITY,
+        )
 
-    cover_xhtml = '''<?xml version="1.0" encoding="utf-8"?>
+    cover_xhtml = f'''<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ru" lang="ru">
 <head><meta charset="utf-8"/><title>Обложка</title><link rel="stylesheet" type="text/css" href="../styles/book.css"/></head>
-<body class="cover"><div epub:type="cover" xmlns:epub="http://www.idpf.org/2007/ops"><img src="../images/cover.png" alt="Обложка книги"/></div></body>
+<body class="cover"><div epub:type="cover" xmlns:epub="http://www.idpf.org/2007/ops"><img src="../images/{cover_name}" alt="Обложка книги"/></div></body>
 </html>
 '''
     (staging / "OEBPS" / "text" / "cover.xhtml").write_text(cover_xhtml, encoding="utf-8")
@@ -1030,7 +1114,7 @@ def build_epub(output: Path) -> Path:
         f'    <itemref idref="{item_id}"/>' for item_id, _name, _title in chapter_items
     )
     manifest_images = "\n".join(
-        f'    <item id="image-{index}" href="images/{image_name}" media-type="image/png"/>'
+        f'    <item id="image-{index}" href="images/{epub_image_name(image_name)}" media-type="image/jpeg"/>'
         for index, (image_name, _alt) in enumerate(ILLUSTRATIONS.values(), start=1)
     )
     creators = "\n".join(
@@ -1054,7 +1138,7 @@ def build_epub(output: Path) -> Path:
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
     <item id="css" href="styles/book.css" media-type="text/css"/>
-    <item id="cover-image" href="images/cover.png" media-type="image/png" properties="cover-image"/>
+    <item id="cover-image" href="images/{cover_name}" media-type="image/jpeg" properties="cover-image"/>
     <item id="cover" href="text/cover.xhtml" media-type="application/xhtml+xml"/>
     <item id="title" href="text/title.xhtml" media-type="application/xhtml+xml"/>
     <item id="colophon" href="text/colophon.xhtml" media-type="application/xhtml+xml"/>
@@ -1090,8 +1174,35 @@ def validate_epub_tree(staging: Path) -> None:
 
 
 def validate_epub_archive(path: Path) -> None:
+    if path.stat().st_size > EPUB_MAX_FILE_SIZE:
+        raise ValueError(
+            f"EPUB is unexpectedly large: {path.stat().st_size / 1024 / 1024:.1f} MiB "
+            f"(limit: {EPUB_MAX_FILE_SIZE / 1024 / 1024:.0f} MiB)"
+        )
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
+        expected_images = {
+            f"OEBPS/images/{epub_image_name(COVER.name)}",
+            *(
+                f"OEBPS/images/{epub_image_name(image_name)}"
+                for image_name, _alt in ILLUSTRATIONS.values()
+            ),
+        }
+        missing_images = expected_images.difference(names)
+        if missing_images:
+            raise ValueError(
+                "Missing EPUB images:\n" + "\n".join(sorted(missing_images))
+            )
+        unexpected_pngs = [
+            name
+            for name in names
+            if name.startswith("OEBPS/images/") and name.endswith(".png")
+        ]
+        if unexpected_pngs:
+            raise ValueError(
+                "Unoptimized PNG images found in EPUB:\n"
+                + "\n".join(sorted(unexpected_pngs))
+            )
         if not names or names[0] != "mimetype":
             raise ValueError("EPUB mimetype is not the first archive entry")
         if archive.read("mimetype") != b"application/epub+zip":
