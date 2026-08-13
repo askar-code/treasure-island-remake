@@ -14,9 +14,9 @@
 </p>
 
 <p align="center">
-  <a href="output/pdf/esli-by-ya-vam-rasskazal-pro-silvera.pdf?raw=1"><strong>Скачать PDF</strong></a>
+  <a href="https://raw.githubusercontent.com/askar-code/treasure-island-remake/main/output/pdf/esli-by-ya-vam-rasskazal-pro-silvera.pdf"><strong>Скачать PDF</strong></a>
   ·
-  <a href="output/epub/esli-by-ya-vam-rasskazal-pro-silvera.epub?raw=1"><strong>Скачать EPUB</strong></a>
+  <a href="https://raw.githubusercontent.com/askar-code/treasure-island-remake/main/output/epub/esli-by-ya-vam-rasskazal-pro-silvera.epub"><strong>Скачать EPUB</strong></a>
 </p>
 
 ## О книге
@@ -43,8 +43,8 @@
 
 ## Готовое издание
 
-- [PDF](output/pdf/esli-by-ya-vam-rasskazal-pro-silvera.pdf?raw=1) — 449 страниц формата A5.
-- [EPUB](output/epub/esli-by-ya-vam-rasskazal-pro-silvera.epub?raw=1) — электронная версия с навигацией по главам.
+- [PDF](https://raw.githubusercontent.com/askar-code/treasure-island-remake/main/output/pdf/esli-by-ya-vam-rasskazal-pro-silvera.pdf) — 449 страниц формата A5.
+- [EPUB](https://raw.githubusercontent.com/askar-code/treasure-island-remake/main/output/epub/esli-by-ya-vam-rasskazal-pro-silvera.epub) — электронная версия с навигацией по главам.
 - Обложка и 22 внутренние иллюстрации.
 - Язык — русский.
 - Год первого электронного издания — 2026.
